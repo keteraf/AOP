@@ -1,29 +1,21 @@
-# Introduction #
+## AOP PHP Extension
 
-AOP is a PECL extension that enables you to use Aspect Oriented Programming in PHP, without the need
-to compile or proceed to any other intermediate step before publishing your code.
+This project provides a PECL extension that enables you to use Aspect Oriented Programming (AOP) in PHP,
+without the need to compile or perform any other intermediate step before publishing your code.
 
-The AOP extension is designed to be the easiest way you can think of for integrating AOP to PHP.
+The AOP extension is designed to be a straightforward way to integrate AOP into PHP and to help you
+separate cross-cutting concerns (cache, logging, security, transactions, and more) from your core logic.
 
-AOP aims to allow separation of cross-cutting concerns (cache, log, security, transactions, ...)
+**Fork notice**: this repository is a fork of the original
+[`AOP-PHP/AOP`](https://github.com/AOP-PHP/AOP) project. The goal of this fork is to keep the extension
+usable on modern PHP versions while preserving the original API and behaviour as much as possible.
 
-[![Build Status](https://secure.travis-ci.org/AOP-PHP/AOP.png?branch=master)](http://travis-ci.org/AOP-PHP/AOP)
-
-## Installation ##
-
-You can use pecl
-
-```sh
-    sudo pecl install aop-beta
-```
-
-or
-
-Download the AOP from github, compile and add the extension to your php.ini
+## Installation
+Download AOP from GitHub, compile it, and add the extension to your `php.ini`:
 
 ```sh
     #Clone the repository on your computer
-    git clone https://github.com/AOP-PHP/AOP
+    git clone https://github.com/keteraf/AOP
     cd AOP
     #prepare the package, you will need to have development tools for php
     phpize
@@ -178,4 +170,3 @@ a given user, a given context, a given procedure. A world where you can hunt wei
 
 We are sure that this extension will soon be part of your future development workflow!
 
-[Latest version of the documentation](http://www.croes.org/gerald/projects/aop/documentation_aop_extension_php.pdf)
