@@ -55,13 +55,9 @@
 #define AOP_KIND_AFTER_FUNCTION (AOP_KIND_AFTER+AOP_KIND_FUNCTION)
 
 
-#if ZEND_MODULE_API_NO >= 20100525
-#define AOP_KEY_D    , const zend_literal *key
-#define AOP_KEY_C    , NULL
-#else
-#define AOP_KEY_D    
-#define AOP_KEY_C    
-#endif
+/* AOP_KEY macros removed - no longer needed in PHP 8.0+ */
+#define AOP_KEY_D
+#define AOP_KEY_C
 
 typedef struct {
     zend_op_array *op;
@@ -125,7 +121,7 @@ typedef struct {
     int kind_of_advice;
     int current_pointcut_index;
     HashTable *advice;
-    HashPosition pos;
+    zend_hash_position pos;
     zval *object;
     zval *member;
     zval *value;
@@ -160,7 +156,7 @@ zval **aopJoinpoint_cache;
 
 HashTable *function_cache;
 
-zend_bool aop_enable;
+bool aop_enable;
 
 HashTable * pointcuts;
 
@@ -193,54 +189,41 @@ PHP_FUNCTION(aop_add_after_throwing);
 extern zend_module_entry aop_module_entry;
 #define phpext_aop_ptr &aop_module_entry
 
-static void (*_zend_execute_ex)(zend_execute_data *execute_data TSRMLS_DC);
-static void (*_zend_execute) (zend_op_array *ops TSRMLS_DC);
+static void (*_zend_execute_ex)(zend_execute_data *execute_data);
+static void (*_zend_execute) (zend_op_array *ops);
 
-#if ZEND_MODULE_API_NO < 20121113
-static void (*_zend_execute_internal) (zend_execute_data *current_execute_data, int return_value_used TSRMLS_DC);
-#else
-static void (*_zend_execute_internal) (zend_execute_data *current_execute_data, struct _zend_fcall_info *fci, int return_value_used TSRMLS_DC);
-#endif
-static void add_pointcut (zend_fcall_info fci, zend_fcall_info_cache fcic, char *selector, int selector_len, int type, zval **return_value_ptr TSRMLS_DC);
+ZEND_DLEXPORT void (*_zend_execute_internal) (zend_execute_data *current_execute_data, zend_fcall_info *fci, zval *return_value);
+static void add_pointcut (zend_fcall_info fci, zend_fcall_info_cache fcic, char *selector, int selector_len, int type, zval **return_value_ptr);
 static void free_pointcut(void *);
 static void free_pointcut_cache (void *);
-ZEND_DLEXPORT void aop_execute (zend_op_array *ops TSRMLS_DC);
+ZEND_DLEXPORT void aop_execute (zend_op_array *ops);
 
-#if ZEND_MODULE_API_NO >= 20121212
-ZEND_DLEXPORT void aop_execute_ex (zend_execute_data *execute_data TSRMLS_DC);
-ZEND_DLEXPORT void _zend_execute_overload(zend_op_array *ops TSRMLS_DC);
-#endif
+ZEND_DLEXPORT void aop_execute_ex (zend_execute_data *execute_data);
+ZEND_DLEXPORT void _zend_execute_overload(zend_op_array *ops);
 
-#if ZEND_MODULE_API_NO < 20121113
-ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data, int return_value_used TSRMLS_DC);
-#else
-ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data, struct _zend_fcall_info *fci, int return_value_used TSRMLS_DC);
-#endif
-zval *get_current_args (zend_execute_data *ex TSRMLS_DC);
+ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data, zend_fcall_info *fci, zval *return_value);
+zval *get_current_args (zend_execute_data *ex);
 static int strcmp_with_joker (char *str_with_jok, char *str);
 static int strcmp_with_joker_case (char *str_with_jok, char *str, int case_sensitive);
 
 static int pointcut_match_zend_class_entry (pointcut *pc, zend_class_entry *ce);
 static int pointcut_match_zend_function (pointcut *pc, zend_function *curr_func, zend_execute_data *data);
-#if ZEND_MODULE_API_NO < 20100525
-static void (*zend_std_write_property)(zval *object, zval *member, zval *value TSRMLS_DC);
-#endif
-void _test_func_pointcut_and_execute(HashPosition pos, HashTable *ht, zend_execute_data *ex, zval *object, zend_class_entry *scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval **to_return_ptr_ptr);
-static zval * (*zend_std_read_property)(zval *object, zval *member, int type AOP_KEY_D TSRMLS_DC);
-static zval ** (*zend_std_get_property_ptr_ptr)(zval *object, zval *member AOP_KEY_D TSRMLS_DC);
-void _test_write_pointcut_and_execute(HashPosition pos, HashTable *ht, zval *object, zval *member, zval *value, zend_class_entry *current_scope AOP_KEY_D);
+void _test_func_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zend_execute_data *ex, zval *object, zend_class_entry *scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval **to_return_ptr_ptr);
+static zval * (*zend_std_read_property)(zval *object, zval *member, int type);
+static zval * (*zend_std_get_property_ptr_ptr)(zval *object, zval *member);
+void _test_write_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zval *object, zval *member, zval *value, zend_class_entry *current_scope);
 static void execute_pointcut (pointcut *pointcut_to_execute, zval *arg);
-static int test_property_scope (pointcut *current_pc, zend_class_entry *ce, zval *member AOP_KEY_D);
+static int test_property_scope (pointcut *current_pc, zend_class_entry *ce, zval *member);
 static void execute_context (zend_execute_data *ex, zval *object, zend_class_entry *calling_scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval ** to_return_ptr_ptr);
 
-ZEND_DLEXPORT zval **zend_std_get_property_ptr_ptr_overload(zval *object, zval *member AOP_KEY_D TSRMLS_DC); 
+ZEND_DLEXPORT zval *zend_std_get_property_ptr_ptr_overload(zval *object, zval *member); 
 
 HashTable *calculate_function_pointcuts (zval *object, zend_execute_data *ex);
-HashTable *calculate_property_pointcuts (zval *object, zval *member, int kind AOP_KEY_D);
-zval *_test_read_pointcut_and_execute(HashPosition pos, HashTable *ht, zval *object, zval *member, int type, zend_class_entry *current_scope AOP_KEY_D);
+HashTable *calculate_property_pointcuts (zval *object, zval *member, int kind);
+zval *_test_read_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zval *object, zval *member, int type, zend_class_entry *current_scope);
 void make_regexp_on_pointcut (pointcut **pc); 
 object_cache *get_object_cache (zval *object);
-HashTable * get_cache_property (zval *object, zval *member, int type AOP_KEY_D);
+HashTable * get_cache_property (zval *object, zval *member, int type);
 HashTable * get_cache_func (zval *object, zend_execute_data *ex);
 static void free_object_cache (void * cache);
 
