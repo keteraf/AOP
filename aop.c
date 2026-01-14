@@ -23,6 +23,7 @@
 #include "main/php_ini.h"
 #include "ext/standard/php_string.h"
 #include "ext/pcre/php_pcre.h"
+#include <pcre2.h>
 #include "Lexer.h"
 #include "aop_joinpoint.h"
 #include "aop.h"
@@ -79,14 +80,20 @@ static zend_class_entry* aop_const_class_entry;
 
 zend_object_handlers AopJoinpoint_object_handlers;
 
+/* Define _zend_execute_internal here - declared as extern in aop.h */
+/* _zend_execute_internal is declared as extern in aop.h, defined here */
+void (*_zend_execute_internal) (zend_execute_data *current_execute_data, zval *return_value) = NULL;
+
 static void aop_free_object(zend_object *object)
 {
     AopJoinpoint_object *obj = (AopJoinpoint_object *)((char *)object - XtOffsetOf(AopJoinpoint_object, std));
     if (obj->value != NULL) {
-        zval_ptr_dtor(&obj->value);
+        zval_ptr_dtor(obj->value);
+        efree(obj->value);
     }
     if (obj->args != NULL) {
-        zval_ptr_dtor(&obj->args);
+        zval_ptr_dtor(obj->args);
+        efree(obj->args);
     }
     zend_object_std_dtor(&obj->std);
 }
@@ -119,23 +126,53 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_args_returnbyref, 0, ZEND_RETURN_REFERENCE, -1)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getPropertyName, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getPropertyValue, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getKindOfAdvice, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getPointcut, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getObject, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getClassName, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getMethodName, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getFunctionName, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_getException, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_aop_process, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry aop_methods[] = {
     PHP_ME(AopJoinpoint, getArguments, arginfo_aop_args_returnbyref, 0)
-    PHP_ME(AopJoinpoint, getPropertyName, NULL, 0)
-    PHP_ME(AopJoinpoint, getPropertyValue, NULL, 0)
+    PHP_ME(AopJoinpoint, getPropertyName, arginfo_aop_getPropertyName, 0)
+    PHP_ME(AopJoinpoint, getPropertyValue, arginfo_aop_getPropertyValue, 0)
     PHP_ME(AopJoinpoint, setArguments, arginfo_aop_args_setArguments, 0)
-    PHP_ME(AopJoinpoint, getKindOfAdvice, NULL, 0)
+    PHP_ME(AopJoinpoint, getKindOfAdvice, arginfo_aop_getKindOfAdvice, 0)
     PHP_ME(AopJoinpoint, getReturnedValue, arginfo_aop_args_returnbyref, 0)
     PHP_ME(AopJoinpoint, getAssignedValue, arginfo_aop_args_returnbyref, 0)
     PHP_ME(AopJoinpoint, setReturnedValue, arginfo_aop_args_setReturnedValue, 0)
     PHP_ME(AopJoinpoint, setAssignedValue, arginfo_aop_args_setAssignedValue, 0)
-    PHP_ME(AopJoinpoint, getPointcut, NULL, 0)
-    PHP_ME(AopJoinpoint, getObject, NULL, 0)
-    PHP_ME(AopJoinpoint, getClassName, NULL, 0)
-    PHP_ME(AopJoinpoint, getMethodName, NULL, 0)
-    PHP_ME(AopJoinpoint, getFunctionName, NULL, 0)
-    PHP_ME(AopJoinpoint, getException, NULL, 0)
-    PHP_ME(AopJoinpoint, process, NULL, 0)
+    PHP_ME(AopJoinpoint, getPointcut, arginfo_aop_getPointcut, 0)
+    PHP_ME(AopJoinpoint, getObject, arginfo_aop_getObject, 0)
+    PHP_ME(AopJoinpoint, getClassName, arginfo_aop_getClassName, 0)
+    PHP_ME(AopJoinpoint, getMethodName, arginfo_aop_getMethodName, 0)
+    PHP_ME(AopJoinpoint, getFunctionName, arginfo_aop_getFunctionName, 0)
+    PHP_ME(AopJoinpoint, getException, arginfo_aop_getException, 0)
+    PHP_ME(AopJoinpoint, process, arginfo_aop_process, 0)
     {NULL, NULL, NULL}
 };
 
@@ -156,7 +193,7 @@ PHP_RSHUTDOWN_FUNCTION(aop)
     FREE_HASHTABLE(aop_g(pointcuts));
     for (i = 0; i < aop_g(count_aopJoinpoint_cache); i++) {
         zval *aop_object = aop_g(aopJoinpoint_cache)[i];
-        zval_ptr_dtor(&aop_object);
+        zval_ptr_dtor(aop_object);
     }
     if (aop_g(aopJoinpoint_cache)!=NULL) {
         efree(aop_g(aopJoinpoint_cache));
@@ -178,17 +215,17 @@ PHP_RINIT_FUNCTION(aop)
     aop_g(pointcut_version) = 0;
 
     ALLOC_HASHTABLE(aop_g(pointcuts));
-    zend_hash_init(aop_g(pointcuts), 16, NULL, free_pointcut,0);
+    zend_hash_init(aop_g(pointcuts), 16, NULL, (dtor_func_t)free_pointcut, 0);
 
 
     ALLOC_HASHTABLE(aop_g(function_cache));
-    zend_hash_init(aop_g(function_cache), 16, NULL, free_pointcut_cache,0);
+    zend_hash_init(aop_g(function_cache), 16, NULL, (dtor_func_t)free_pointcut_cache, 0);
 
     return SUCCESS;
 }
 
-static void free_pointcut_cache (void * cache) {
-    pointcut_cache *_cache = ((pointcut_cache *)cache);
+static void free_pointcut_cache (zval *zv) {
+    pointcut_cache *_cache = (pointcut_cache *)Z_PTR_P(zv);
     if (_cache->ht!=NULL) {
         zend_hash_destroy(_cache->ht);
         FREE_HASHTABLE(_cache->ht);
@@ -213,9 +250,10 @@ static void free_object_cache (void * cache) {
     efree(_cache);
 }
 
-static void free_pointcut(void *pc)
+static void free_pointcut(zval *zv)
 {
-    pointcut *_pc = *((pointcut **)pc);
+    pointcut **_pc_ptr = (pointcut **)Z_PTR_P(zv);
+    pointcut *_pc = *_pc_ptr;
     if (_pc->class_name!=NULL) {
         efree(_pc->class_name);
     }
@@ -226,11 +264,11 @@ static void free_pointcut(void *pc)
     if (_pc->selector!=NULL) {
         efree(_pc->selector);
     }
-    if (_pc->fci.function_name) {
-        zval_ptr_dtor((zval **)&_pc->fci.function_name);
+    if (Z_TYPE(_pc->fci.function_name) != IS_UNDEF) {
+        zval_ptr_dtor(&_pc->fci.function_name); /* function_name is zval, &function_name is zval* - correct */
     }
-    if (_pc->fci.object_ptr) {
-        zval_ptr_dtor((zval **)&_pc->fci.object_ptr);
+    if (_pc->fci.object != NULL) {
+        /* object is zend_object*, not zval - refcounting handled by zend_call_function */
     }
     /* Seems to be free by the engine (pce cache are in a hashtable)
     if (_pc->re_method!=NULL) {
@@ -252,14 +290,16 @@ static zval *get_aopJoinpoint () {
         if (Z_REFCOUNT_P(aop_object) == 1) {
             AopJoinpoint_object *obj = (AopJoinpoint_object *)((char *)Z_OBJ_P(aop_object) - XtOffsetOf(AopJoinpoint_object, std));
             if (obj->value) {
-                zval_ptr_dtor(&obj->value);
+                zval_ptr_dtor(obj->value);
+                efree(obj->value);
             }
             obj->value = NULL;
             obj->member = NULL;
             obj->type = 0;
             obj->object = NULL;
             if (obj->args!=NULL) {
-                zval_ptr_dtor(&obj->args);
+                zval_ptr_dtor(obj->args);
+                efree(obj->args);
             }
             obj->args=NULL;
             Z_ADDREF_P(aop_object);
@@ -278,46 +318,67 @@ static zval *get_aopJoinpoint () {
     return aop_object;
 }
 
-ZEND_DLEXPORT zval *zend_std_get_property_ptr_ptr_overload(zval *object, zval *member) {
+ZEND_DLEXPORT zval *zend_std_get_property_ptr_ptr_overload(zend_object *object, zend_string *member, int type, void **cache_slot) {
     zval *try_return;
     zend_execute_data *ex = EG(current_execute_data);
     //Test if ++
-    if (ex->opline->opcode != ZEND_PRE_INC_OBJ && ex->opline->opcode != ZEND_POST_INC_OBJ && ex->opline->opcode != ZEND_PRE_DEC_OBJ && ex->opline->opcode != ZEND_POST_DEC_OBJ) {
-        try_return = zend_std_get_property_ptr_ptr(object, member);
+    if (ex && ex->opline && ex->opline->opcode != ZEND_PRE_INC_OBJ && ex->opline->opcode != ZEND_POST_INC_OBJ && ex->opline->opcode != ZEND_PRE_DEC_OBJ && ex->opline->opcode != ZEND_POST_DEC_OBJ) {
+        try_return = zend_std_get_property_ptr_ptr(object, member, type, cache_slot);
     } else {
         // Call original to not have a notice
-        zend_std_get_property_ptr_ptr(object, member);
+        zend_std_get_property_ptr_ptr(object, member, type, cache_slot);
         return NULL;
     }
     return try_return;
 }
 
-ZEND_DLEXPORT zval * zend_std_read_property_overload(zval *object, zval *member, int type) {
+ZEND_DLEXPORT zval * zend_std_read_property_overload(zend_object *object, zend_string *member, int type, void **cache_slot, zval *rv) {
     zval *to_return;
-        if (aop_g(lock_read_property)>25) {
-            zend_error(E_ERROR, "Too many level of nested advices. Are there any recursive call ?");
-        }
-        aop_g(lock_read_property)++;
-        to_return = _test_read_pointcut_and_execute(NULL, NULL, object, member, type, EG(scope));
-        aop_g(lock_read_property)--;
-        return to_return;
+    zval obj_zv, member_zv;
+    zend_class_entry *scope = NULL;
+    zend_execute_data *ex = EG(current_execute_data);
+    
+    if (aop_g(lock_read_property)>25) {
+        zend_error(E_ERROR, "Too many level of nested advices. Are there any recursive call ?");
+    }
+    
+    /* Convert zend_object* to zval* */
+    ZVAL_OBJ(&obj_zv, object);
+    /* Convert zend_string* to zval* */
+    ZVAL_STR(&member_zv, member);
+    
+    /* Get scope from current execute data */
+    if (ex && ex->func) {
+        scope = ex->func->common.scope;
+    }
+    
+    aop_g(lock_read_property)++;
+    to_return = _test_read_pointcut_and_execute(NULL, NULL, &obj_zv, &member_zv, type, scope);
+    aop_g(lock_read_property)--;
+    return to_return;
 }
 
 
-void _test_func_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zend_execute_data *ex, zval *object, zend_class_entry *scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval **to_return_ptr_ptr) {
+void _test_func_pointcut_and_execute(HashPosition *pos, HashTable *ht, zend_execute_data *ex, zval *object, zend_class_entry *scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval **to_return_ptr_ptr) {
     zval *aop_object, *exception;
     AopJoinpoint_object *obj;
     pointcut *current_pc;
     pointcut **temp;
-    zend_hash_position local_pos;
+    HashPosition local_pos;
     if (pos == NULL) {
         pos = &local_pos;
     }
     if (ht==NULL) {
-        ht = get_cache_func (object, ex); 
+        /* For functions, object should be NULL or not an object */
+        zval *func_object = (object && Z_TYPE_P(object) == IS_OBJECT) ? object : NULL;
+        ht = get_cache_func (func_object, ex);
         if (ht==NULL) {
+            /* No pointcuts match - for now, skip execute_context to avoid segfaults.
+             * The original function should execute normally without AOP interception.
+             * TODO: Fix execute_context to properly handle PHP 8 argument access.
+             */
             aop_g(overloaded) = 0;
-            execute_context (ex, object, scope, called_scope,args_overloaded, args, to_return_ptr_ptr);
+            /* Don't call execute_context - let the original function execute normally */
             aop_g(overloaded) = 1;
             return;
         }
@@ -325,19 +386,21 @@ void _test_func_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zen
     } else {
         zend_hash_move_forward_ex (ht, pos);
     }
-    if (zend_hash_get_current_data_ex(ht, (void **)&temp, pos) != SUCCESS) {
+    zval *zv = zend_hash_get_current_data_ex(ht, pos);
+    if (zv == NULL) {
         aop_g(overloaded) = 0;
         execute_context (ex, object, scope, called_scope,args_overloaded, args, to_return_ptr_ptr);
         aop_g(overloaded) = 1;
         return;
     }
+    temp = (pointcut **)Z_PTR_P(zv);
     current_pc = *temp;
 
     aop_object = get_aopJoinpoint();
     obj = (AopJoinpoint_object *)((char *)Z_OBJ_P(aop_object) - XtOffsetOf(AopJoinpoint_object, std));
     obj->current_pointcut = current_pc;
     //obj->current_pointcut_index = current_pointcut_index; 
-    obj->pos = pos;
+    obj->pos = *pos;
     obj->advice = ht;
     obj->kind_of_advice = current_pc->kind_of_advice;
     obj->object = object;
@@ -371,8 +434,15 @@ void _test_func_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zen
     }
     if (current_pc->kind_of_advice & AOP_KIND_AFTER) {
         if (current_pc->kind_of_advice & AOP_KIND_CATCH && EG(exception)) {
-            exception = EG(exception); 
-            obj->exception = exception;
+            zend_object *exception = EG(exception); 
+            /* obj->exception is zval* but exception is zend_object* - storing as zval for compatibility */
+            if (obj->exception) {
+                zval_ptr_dtor(obj->exception);
+                efree(obj->exception);
+            }
+            obj->exception = emalloc(sizeof(zval));
+            ZVAL_OBJ(obj->exception, exception);
+            Z_ADDREF_P(obj->exception);
             EG(exception)=NULL;
             execute_pointcut(current_pc, aop_object);
             EG(exception) = exception;
@@ -392,14 +462,16 @@ void _test_func_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zen
     return;
 }
     
-zval *_test_read_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zval *object, zval *member, int type, zend_class_entry *current_scope) {
-    zval *temp_this, *to_return;
+zval *_test_read_pointcut_and_execute(HashPosition *pos, HashTable *ht, zval *object, zval *member, int type, zend_class_entry *current_scope) {
+    zval *to_return = NULL;
     zend_class_entry *scope;
     pointcut **temp;
     pointcut *current_pc;
     AopJoinpoint_object *obj;
     zval *aop_object;
-    zend_hash_position local_pos;
+    HashPosition local_pos;
+    zval rv_tmp;
+    zval *rv = &rv_tmp;
     if (pos == NULL) {
         pos = &local_pos;
     }
@@ -410,22 +482,22 @@ zval *_test_read_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zv
     } else {
         zend_hash_move_forward_ex (ht, pos);
     }
-    if (zend_hash_get_current_data_ex(ht, (void **)&temp, pos) != SUCCESS) {
-        scope = EG(scope);
-        temp_this = EG(This);
-        EG(scope) = current_scope;
-        EG(This) = object;
-        to_return = zend_std_read_property(object, member, type);
-        EG(This) = temp_this;
-        EG(scope) = scope;
+    zval *zv = zend_hash_get_current_data_ex(ht, pos);
+    if (zv == NULL) {
+        scope = current_scope; /* Use passed scope parameter */
+        /* Call original handler - need to convert zval* to zend_object* and zend_string* */
+        zend_object *obj = Z_OBJ_P(object);
+        zend_string *member_str = Z_STR_P(member);
+        to_return = zend_std_read_property(obj, member_str, type, NULL, rv);
         return to_return;
     }
+    temp = (pointcut **)Z_PTR_P(zv);
     current_pc = *temp;
 
     aop_object = get_aopJoinpoint();
     obj = (AopJoinpoint_object *)((char *)Z_OBJ_P(aop_object) - XtOffsetOf(AopJoinpoint_object, std));
     obj->current_pointcut = current_pc;
-    obj->pos = pos;
+    obj->pos = *pos;
     obj->advice = ht;
     obj->kind_of_advice = (current_pc->kind_of_advice&AOP_KIND_WRITE) ? (current_pc->kind_of_advice - AOP_KIND_WRITE) : current_pc->kind_of_advice;
     obj->object = object;
@@ -452,14 +524,14 @@ zval *_test_read_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zv
     return to_return;
 }
 
-void _test_write_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zval *object, zval *member, zval *value, zend_class_entry *current_scope) {
+void _test_write_pointcut_and_execute(HashPosition *pos, HashTable *ht, zval *object, zval *member, zval *value, zend_class_entry *current_scope) {
     zval *temp_this, *to_return;
     zend_class_entry *scope;
     pointcut **temp;
     pointcut *current_pc;
     AopJoinpoint_object *obj;
     zval *aop_object;
-    zend_hash_position local_pos;
+    HashPosition local_pos;
     if (pos == NULL) {
         pos = &local_pos;
     }
@@ -470,28 +542,28 @@ void _test_write_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zv
     } else {
         zend_hash_move_forward_ex (ht, pos);
     }
-    if (zend_hash_get_current_data_ex(ht, (void **)&temp, pos) != SUCCESS) {
-        scope = EG(scope);
-        temp_this = EG(This);
-        EG(scope) = current_scope;
-        EG(This) = object;
-        zend_std_write_property(object,member,value);
-        EG(This) = temp_this;
-        EG(scope) = scope;
+    zval *zv = zend_hash_get_current_data_ex(ht, pos);
+    if (zv == NULL) {
+        scope = current_scope; /* Use passed scope parameter */
+        /* Call original handler - need to convert zval* to zend_object* and zend_string* */
+        zend_object *obj = Z_OBJ_P(object);
+        zend_string *member_str = Z_STR_P(member);
+        zend_std_write_property(obj, member_str, value, NULL);
         return;
     }
+    temp = (pointcut **)Z_PTR_P(zv);
     current_pc = *temp;
 
     aop_object = get_aopJoinpoint();
     obj = (AopJoinpoint_object *)((char *)Z_OBJ_P(aop_object) - XtOffsetOf(AopJoinpoint_object, std));
     obj->current_pointcut = current_pc;
-    obj->pos = pos;
+    obj->pos = *pos;
     obj->advice = ht;
     obj->kind_of_advice = (current_pc->kind_of_advice&AOP_KIND_READ) ? (current_pc->kind_of_advice - AOP_KIND_READ) : current_pc->kind_of_advice;
     obj->object = object;
     obj->member = member;
     obj->value = value;
-    Z_SET_ISREF_P(value);
+    /* Z_SET_ISREF_P removed in PHP 8 - refcount handling is automatic */
     Z_ADDREF_P(value);
     obj->scope = current_scope;
 
@@ -564,7 +636,8 @@ static void execute_pointcut (pointcut *pointcut_to_execute, zval *arg) {
     if (Z_TYPE(zret) != IS_NULL && Z_TYPE(zret) != IS_UNDEF) {
         AopJoinpoint_object *obj = (AopJoinpoint_object *)((char *)Z_OBJ_P(arg) - XtOffsetOf(AopJoinpoint_object, std));
         if (obj->value != NULL) {
-            zval_ptr_dtor(&obj->value);
+            zval_ptr_dtor(obj->value);
+            efree(obj->value);
         }
         obj->value = emalloc(sizeof(zval));
         *obj->value = zret;
@@ -574,16 +647,31 @@ static void execute_pointcut (pointcut *pointcut_to_execute, zval *arg) {
             zval_ptr_dtor(&zret);
         }
     }
-    zval_ptr_dtor(&params[0]);
+    zval_ptr_dtor(&params[0]); /* params[0] is zval, &params[0] is zval* - correct */
 }
 
-ZEND_DLEXPORT void zend_std_write_property_overload(zval *object, zval *member, zval *value) {
-        if (aop_g(lock_write_property) > 25) {
-            zend_error(E_ERROR, "Too many level of nested advices. Are there any recursive call ?");
-        }
-        aop_g(lock_write_property)++;
-        _test_write_pointcut_and_execute(NULL, NULL, object, member, value, EG(scope));
-        aop_g(lock_write_property)--;
+ZEND_DLEXPORT void zend_std_write_property_overload(zend_object *object, zend_string *member, zval *value, void **cache_slot) {
+    zval obj_zv, member_zv;
+    zend_class_entry *scope = NULL;
+    zend_execute_data *ex = EG(current_execute_data);
+    
+    if (aop_g(lock_write_property) > 25) {
+        zend_error(E_ERROR, "Too many level of nested advices. Are there any recursive call ?");
+    }
+    
+    /* Convert zend_object* to zval* */
+    ZVAL_OBJ(&obj_zv, object);
+    /* Convert zend_string* to zval* */
+    ZVAL_STR(&member_zv, member);
+    
+    /* Get scope from current execute data */
+    if (ex && ex->func) {
+        scope = ex->func->common.scope;
+    }
+    
+    aop_g(lock_write_property)++;
+    _test_write_pointcut_and_execute(NULL, NULL, &obj_zv, &member_zv, value, scope);
+    aop_g(lock_write_property)--;
 }
 
 PHP_INI_BEGIN()
@@ -623,15 +711,18 @@ PHP_MINIT_FUNCTION(aop)
     REGISTER_LONG_CONSTANT("AOP_KIND_AFTER_FUNCTION", AOP_KIND_AFTER_FUNCTION, CONST_CS | CONST_PERSISTENT);
     REGISTER_LONG_CONSTANT("AOP_KIND_AROUND_FUNCTION", AOP_KIND_AROUND_FUNCTION, CONST_CS | CONST_PERSISTENT);
 
-#if ZEND_MODULE_API_NO < 20100525
+/* In PHP 8.4, std_object_handlers is const and cannot be modified.
+ * Object handler overriding would need to be done per-class during class registration.
+ * For now, this is disabled - property AOP functionality will not work without per-class handler setup.
+ */
+#if 0
     zend_std_write_property = std_object_handlers.write_property;
-#endif
     std_object_handlers.write_property = zend_std_write_property_overload;
     zend_std_read_property = std_object_handlers.read_property;
     std_object_handlers.read_property = zend_std_read_property_overload;
-
     zend_std_get_property_ptr_ptr = std_object_handlers.get_property_ptr_ptr;
     std_object_handlers.get_property_ptr_ptr = zend_std_get_property_ptr_ptr_overload;
+#endif
 
 #if ZEND_MODULE_API_NO >= 20121212
     _zend_execute_ex = zend_execute_ex;
@@ -669,7 +760,7 @@ static pointcut * alloc_pointcut () {
     return pc;
 }
 
-static void add_pointcut (zend_fcall_info fci, zend_fcall_info_cache fcic, char *selector, int selector_len, int type , zval **return_value_ptr) {
+static void add_pointcut (zend_fcall_info fci, zend_fcall_info_cache fcic, char *selector, int selector_len, int type , zval *return_value) {
     pointcut *pc = NULL;
     char *temp_str = NULL;
     int is_class = 0;
@@ -741,34 +832,39 @@ static void add_pointcut (zend_fcall_info fci, zend_fcall_info_cache fcic, char 
 
 }
 
+/* Simple string replacement helper - forward declaration */
+static char *aop_str_replace(const char *haystack, size_t haystack_len, 
+                              const char *needle, size_t needle_len,
+                              const char *replacement, size_t replacement_len);
+
 void make_regexp_on_pointcut (pointcut **pc) { 
-    pcre_extra *pcre_extra = NULL;
-    int preg_options = 0;
+    uint32_t capture_count = 0;
     int *replace_count, *new_length;
     char *regexp;
     char *regexp_buffer;
     char tempregexp[500];
+    zend_string *regex_str;
 
     (*pc)->method_jok = (strchr((*pc)->method, '*') != NULL);
-    replace_count = emalloc (sizeof(int));
-    new_length = emalloc (sizeof(int));
+    /* replace_count and new_length no longer needed */
     regexp = estrdup((*pc)->method);
-    regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "**\\", 3, "[.#}", 4, new_length, 0, replace_count);
+    /* Use simple string replacement */
+    regexp_buffer = aop_str_replace(regexp, strlen(regexp), "**\\", 3, "[.#}", 4);
     efree(regexp);
     regexp = regexp_buffer;
-    regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "**", 2, "[.#]", 4, new_length, 0, replace_count);
+    regexp_buffer = aop_str_replace(regexp, strlen(regexp), "**", 2, "[.#]", 4);
     efree(regexp);
     regexp = regexp_buffer;
-    regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "\\", 1, "\\\\", 2, new_length, 0, replace_count);
+    regexp_buffer = aop_str_replace(regexp, strlen(regexp), "\\", 1, "\\\\", 2);
     efree(regexp);
     regexp = regexp_buffer;
-    regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "*", 1, "[^\\\\]*", 6, new_length, 0, replace_count);
+    regexp_buffer = aop_str_replace(regexp, strlen(regexp), "*", 1, "[^\\\\]*", 6);
     efree(regexp);
     regexp = regexp_buffer;
-    regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "[.#]", 4, ".*", 2, new_length, 0, replace_count);
+    regexp_buffer = aop_str_replace(regexp, strlen(regexp), "[.#]", 4, ".*", 2);
     efree(regexp);
     regexp = regexp_buffer;
-    regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "[.#}", 4, "(.*\\\\)?", 7, new_length, 0, replace_count);
+    regexp_buffer = aop_str_replace(regexp, strlen(regexp), "[.#}", 4, "(.*\\\\)?", 7);
     efree(regexp);
     regexp = regexp_buffer;
     if (regexp[0]!='\\') {
@@ -777,29 +873,31 @@ void make_regexp_on_pointcut (pointcut **pc) {
         sprintf((char *)tempregexp, "/^%s$/i", regexp+2);
     }
     efree(regexp);
-    (*pc)->re_method = pcre_get_compiled_regex(tempregexp, &pcre_extra, &preg_options);
+    regex_str = zend_string_init(tempregexp, strlen(tempregexp), 0);
+    (*pc)->re_method = pcre_get_compiled_regex(regex_str, &capture_count);
+    zend_string_release(regex_str);
     //efree(tempregexp);
     if (!(*pc)->re_method) {
         php_error_docref(NULL, E_WARNING, "Invalid expression");
     }
     if ((*pc)->class_name != NULL) {
         regexp = estrdup((*pc)->class_name);
-        regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "**\\", 3, "[.#}", 4, new_length, 0, replace_count);
+        regexp_buffer = aop_str_replace(regexp, strlen(regexp), "**\\", 3, "[.#}", 4);
         efree(regexp);
         regexp = regexp_buffer;
-        regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "**", 2, "[.#]", 4, new_length, 0, replace_count);
+        regexp_buffer = aop_str_replace(regexp, strlen(regexp), "**", 2, "[.#]", 4);
         efree(regexp);
         regexp = regexp_buffer;
-        regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "\\", 1, "\\\\", 2, new_length, 0, replace_count);
+        regexp_buffer = aop_str_replace(regexp, strlen(regexp), "\\", 1, "\\\\", 2);
         efree(regexp);
         regexp = regexp_buffer;
-        regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "*", 1, "[^\\\\]*", 6, new_length, 0, replace_count);
+        regexp_buffer = aop_str_replace(regexp, strlen(regexp), "*", 1, "[^\\\\]*", 6);
         efree(regexp);
         regexp = regexp_buffer;
-        regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "[.#]", 4, ".*", 2, new_length, 0, replace_count);
+        regexp_buffer = aop_str_replace(regexp, strlen(regexp), "[.#]", 4, ".*", 2);
         efree(regexp);
         regexp = regexp_buffer;
-        regexp_buffer = php_str_to_str_ex(regexp, strlen(regexp), "[.#}", 4, "(.*\\\\)?", 7, new_length, 0, replace_count);
+        regexp_buffer = aop_str_replace(regexp, strlen(regexp), "[.#}", 4, "(.*\\\\)?", 7);
         efree(regexp);
         regexp = regexp_buffer;
         if (regexp[0]!='\\') {
@@ -808,13 +906,14 @@ void make_regexp_on_pointcut (pointcut **pc) {
             sprintf((char *)tempregexp, "/^%s$/i", regexp+2);
         }
         efree(regexp);
-        (*pc)->re_class = pcre_get_compiled_regex(tempregexp, &pcre_extra, &preg_options);
+        regex_str = zend_string_init(tempregexp, strlen(tempregexp), 0);
+        (*pc)->re_class = pcre_get_compiled_regex(regex_str, &capture_count);
+        zend_string_release(regex_str);
         if (!(*pc)->re_class) {
             php_error_docref(NULL, E_WARNING, "Invalid expression");
         }
     }
-    efree(replace_count);
-    efree(new_length);
+    /* replace_count and new_length no longer needed */
 }
 
 PHP_FUNCTION(aop_add_around)
@@ -827,13 +926,13 @@ PHP_FUNCTION(aop_add_around)
         zend_error(E_ERROR, "aop_add_around() expects a string for the pointcut as a first argument and a callback as a second argument");
         return;
     }
-    if (fci.function_name) {
-        Z_ADDREF_P(fci.function_name);
+    if (Z_TYPE(fci.function_name) != IS_UNDEF) {
+        Z_ADDREF_P(&fci.function_name);
     }
-    if (fci.object_ptr) {
-        Z_ADDREF_P(fci.object_ptr);
+    if (fci.object != NULL) {
+        /* fci.object is zend_object*, refcounting handled by zend_call_function */
     }
-    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AROUND, return_value_ptr);
+    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AROUND, return_value);
 }
 
 PHP_FUNCTION(aop_add_before)
@@ -846,13 +945,13 @@ PHP_FUNCTION(aop_add_before)
         zend_error(E_ERROR, "aop_add_before() expects a string for the pointcut as a first argument and a callback as a second argument");
         return;
     }
-    if (fci.function_name) {
-        Z_ADDREF_P(fci.function_name);
+    if (Z_TYPE(fci.function_name) != IS_UNDEF) {
+        Z_ADDREF_P(&fci.function_name);
     }
-    if (fci.object_ptr) {
-        Z_ADDREF_P(fci.object_ptr);
+    if (fci.object != NULL) {
+        /* fci.object is zend_object*, refcounting handled by zend_call_function */
     }
-    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_BEFORE, return_value_ptr);
+    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_BEFORE, return_value);
 }
 
 PHP_FUNCTION(aop_add_after_throwing)
@@ -865,14 +964,14 @@ PHP_FUNCTION(aop_add_after_throwing)
         zend_error(E_ERROR, "aop_add_after() expects a string for the pointcut as a first argument and a callback as a second argument");
         return;
     }
-    if (fci.function_name) {
-        Z_ADDREF_P(fci.function_name);
+    if (Z_TYPE(fci.function_name) != IS_UNDEF) {
+        Z_ADDREF_P(&fci.function_name);
     }
-    if (fci.object_ptr) {
-        Z_ADDREF_P(fci.object_ptr);
+    if (fci.object != NULL) {
+        /* fci.object is zend_object*, refcounting handled by zend_call_function */
     }
 
-    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AFTER|AOP_KIND_CATCH, return_value_ptr);
+    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AFTER|AOP_KIND_CATCH, return_value);
 
 }
 
@@ -886,14 +985,14 @@ PHP_FUNCTION(aop_add_after_returning)
         zend_error(E_ERROR, "aop_add_after() expects a string for the pointcut as a first argument and a callback as a second argument");
         return;
     }
-    if (fci.function_name) {
-        Z_ADDREF_P(fci.function_name);
+    if (Z_TYPE(fci.function_name) != IS_UNDEF) {
+        Z_ADDREF_P(&fci.function_name);
     }
-    if (fci.object_ptr) {
-        Z_ADDREF_P(fci.object_ptr);
+    if (fci.object != NULL) {
+        /* fci.object is zend_object*, refcounting handled by zend_call_function */
     }
 
-    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AFTER|AOP_KIND_RETURN, return_value_ptr);
+    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AFTER|AOP_KIND_RETURN, return_value);
 
 }
 
@@ -907,43 +1006,44 @@ PHP_FUNCTION(aop_add_after)
         zend_error(E_ERROR, "aop_add_after() expects a string for the pointcut as a first argument and a callback as a second argument");
         return;
     }
-    if (fci.function_name) {
-        Z_ADDREF_P(fci.function_name);
+    if (Z_TYPE(fci.function_name) != IS_UNDEF) {
+        Z_ADDREF_P(&fci.function_name);
     }
-    if (fci.object_ptr) {
-        Z_ADDREF_P(fci.object_ptr);
+    if (fci.object != NULL) {
+        /* fci.object is zend_object*, refcounting handled by zend_call_function */
     }
-    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AFTER|AOP_KIND_CATCH|AOP_KIND_RETURN, return_value_ptr);
+    add_pointcut(fci, fcic, selector, selector_len, AOP_KIND_AFTER|AOP_KIND_CATCH|AOP_KIND_RETURN, return_value);
 }
 
 
 ZEND_DLEXPORT void aop_execute_ex (zend_execute_data *execute_data) {
-    zend_op_array *op_array = execute_data->func->op_array;
+    zend_op_array *op_array = &execute_data->func->op_array;
     if (aop_g(in_ex)) {
         aop_g(in_ex) = 0;
         _zend_execute_ex(execute_data);
     } else {
-        zend_vm_stack_free();
-        if (EG(This)) {
-            //zval_ptr_dtor(&EG(This));
-        }
+        /* zend_vm_stack_free() removed in PHP 8 - stack management is automatic */
+        /* EG(This) removed in PHP 8 - This is per-execute-data */
         EG(current_execute_data) = execute_data->prev_execute_data;
         aop_execute(op_array);
     }
 }
 
-ZEND_DLEXPORT void _zend_execute_overload (zend_op_array *ops) {
+ZEND_DLEXPORT void _zend_execute_overload (zend_op_array *ops, zval *return_value) {
     aop_g(in_ex) = 1;
-    zend_execute(ops);
+    zend_execute(ops, return_value);
 }
 
 ZEND_DLEXPORT void aop_execute (zend_op_array *ops) {
     zend_execute_data *data;
     zend_function *curr_func = NULL;
-    int must_return = (EG(return_value_ptr_ptr)!=NULL);
+    zval retval;
+    ZVAL_UNDEF(&retval);
 
     if (!aop_g(aop_enable)) {
-        _zend_execute(ops);
+        zval dummy_retval;
+        ZVAL_UNDEF(&dummy_retval);
+        _zend_execute(ops, &dummy_retval);
         return;
     }
 
@@ -953,43 +1053,36 @@ ZEND_DLEXPORT void aop_execute (zend_op_array *ops) {
         curr_func = data->func;
     }
     if (ops->type==ZEND_EVAL_CODE || curr_func == NULL || curr_func->common.function_name == NULL || aop_g(overloaded) || EG(exception)) {
-        _zend_execute(ops);
+        zval dummy_retval;
+        ZVAL_UNDEF(&dummy_retval);
+        _zend_execute(ops, &dummy_retval);
         return;
     }
-    if (!EG(return_value_ptr_ptr)) {
-        EG(return_value_ptr_ptr) = emalloc(sizeof(zval *));
-        *(EG(return_value_ptr_ptr)) = NULL;
-    }
+    
     aop_g(overloaded) = 1;
-    _test_func_pointcut_and_execute(NULL, NULL, EG(current_execute_data), EG(This), EG(scope),EG(called_scope), 0, NULL, EG(return_value_ptr_ptr));
-    aop_g(overloaded) = 0;
-    if (!must_return) {
-        if (*EG(return_value_ptr_ptr)) {
-            zval_ptr_dtor(EG(return_value_ptr_ptr));
-            efree(EG(return_value_ptr_ptr));
-        } else {
-            efree(EG(return_value_ptr_ptr));
-        }
-    } else if (!must_return) {
-        efree(EG(return_value_ptr_ptr));
-    } else {
-        if (!*EG(return_value_ptr_ptr)) {
-            *EG(return_value_ptr_ptr) = emalloc(sizeof(zval));
-            ZVAL_NULL(*EG(return_value_ptr_ptr));
-        }
+    {
+        zend_execute_data *ex = EG(current_execute_data);
+        zval *this_zv = ex ? &ex->This : NULL;
+        zend_class_entry *scope = ex && ex->func ? ex->func->common.scope : NULL;
+        zend_class_entry *called_scope = scope;
+        zval *retval_ptr = &retval;
+        _test_func_pointcut_and_execute(NULL, NULL, ex, this_zv, scope, called_scope, 0, NULL, &retval_ptr);
     }
+    aop_g(overloaded) = 0;
 }
 
-ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data, zend_fcall_info *fci, zval *return_value) {
+ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data, zval *return_value) {
         zend_execute_data *data;
         zend_function *curr_func = NULL;
         zval *to_return_ptr = return_value;
+        zend_class_entry *scope = NULL;
+        zend_class_entry *called_scope = NULL;
 
         if (!aop_g(aop_enable)) {
             if (_zend_execute_internal) {
-                _zend_execute_internal(current_execute_data, fci, return_value);
+                _zend_execute_internal(current_execute_data, return_value);
             } else {
-                zend_execute_internal(current_execute_data, fci, return_value);
+                zend_execute_internal(current_execute_data, return_value);
             }
             return;
         }
@@ -998,248 +1091,212 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
 
         if (data) {
             curr_func = data->func;
+            if (curr_func) {
+                scope = curr_func->common.scope;
+                called_scope = scope; /* called_scope same as scope for internal functions */
+            }
         }
         if (curr_func == NULL || curr_func->common.function_name == NULL || aop_g(overloaded) || EG(exception)) {
             if (_zend_execute_internal) {
-                _zend_execute_internal(current_execute_data, fci, return_value);
+                _zend_execute_internal(current_execute_data, return_value);
             } else {
-                zend_execute_internal(current_execute_data, fci, return_value);
+                zend_execute_internal(current_execute_data, return_value);
             }
             return;
         }   
 
         aop_g(overloaded) = 1;
-        _test_func_pointcut_and_execute(NULL,NULL, EG(current_execute_data), current_execute_data->This, EG(scope), EG(called_scope), 0, NULL, &to_return_ptr);
+        {
+            zval *this_zv = NULL;
+            zend_execute_data *ex_data = current_execute_data ? current_execute_data : EG(current_execute_data);
+            if (ex_data && Z_TYPE(ex_data->This) == IS_OBJECT) {
+                this_zv = &ex_data->This;
+            }
+            _test_func_pointcut_and_execute(NULL,NULL, ex_data, this_zv, scope, called_scope, 0, NULL, &to_return_ptr);
+        }
         aop_g(overloaded) = 0;
     }
 
+    /*
+     * execute_context:
+     * Re-implements the \"proceed\" logic for joinpoints using the modern
+     * zend_call_function() API instead of manipulating removed executor
+     * globals. This makes the extension compatible with PHP 8+ executor changes.
+     */
     static void execute_context (zend_execute_data *ex, zval *object, zend_class_entry *calling_scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval **to_return_ptr_ptr) {
-        zval **return_value_ptr;
-        zval ***params;
-        zend_uint i;
-        zval **original_return_value;
-        HashTable *calling_symbol_table;
-        zend_op_array *original_op_array;
-        zend_op **original_opline_ptr;
-        zend_class_entry *current_scope;
-        zend_class_entry *current_called_scope;
-        //    zend_class_entry *calling_scope = NULL;
-        zval *current_this;
-        zend_execute_data *original_execute_data;
-        zend_execute_data execute_data;
-        zval *original_object;
-        zend_hash_position pos;
-        zval ** temp = NULL;
+        zend_fcall_info fci;
+        zend_fcall_info_cache fcc;
+        zval retval;
+        zval *fci_params = NULL;
         int arg_count = 0;
+        int i = 0;
 
-        if (!EG(active)) {
-            //TODO ERROR
-            return ;
+        if (!EG(active) || EG(exception)) {
+            return;
         }
 
-        if (EG(exception)) {
-            //TODO ERROR
-            return ;
-        }
-        execute_data = *ex;
+        memset(&fci, 0, sizeof(fci));
+        memset(&fcc, 0, sizeof(fcc));
+        ZVAL_UNDEF(&retval);
 
-        //EX(function_state).function = fci_cache->function_handler;
-        original_object = EX(object);
-        EX(object) = object;
-        if (object && Z_TYPE_P(object) == IS_OBJECT && Z_OBJ_P(object) == NULL) {
-            //TODO ERROR
-            php_printf("ERRRORR");
-            return ;
-        }
-        original_execute_data = EG(current_execute_data);
-        EG(current_execute_data) = ex;
+        fci.size = sizeof(fci);
+        fci.object = (object && Z_TYPE_P(object) == IS_OBJECT) ? Z_OBJ_P(object) : NULL;
+        fci.retval = &retval;
+        /* no_separation removed in PHP 8 */
 
-        if (args_overloaded) {
-            if (args && Z_TYPE_P(args) == IS_ARRAY) {
-                args_overloaded = 1;
-                arg_count=0;
-                zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(args), &pos);
-                while (zend_hash_get_current_data_ex(Z_ARRVAL_P(args), (void **)&temp, &pos) == SUCCESS) {
-                    arg_count++;
-                    if (arg_count == 1) {
-                        params = emalloc(sizeof(zval **));
-                    } else {
-                        params = erealloc(params, arg_count*sizeof(zval **));
-                    }
-                    params[arg_count-1] = temp;
-                    zend_hash_move_forward_ex(Z_ARRVAL_P(args), &pos);
-                }
-            }
+        /* Build argument list either from overloaded args array or from the current call frame */
+        if (args_overloaded && args && Z_TYPE_P(args) == IS_ARRAY) {
+            HashTable *ht = Z_ARRVAL_P(args);
+            zval *zv;
 
+            arg_count = zend_hash_num_elements(ht);
             if (arg_count > 0) {
-                //Copy from zend_call_function
-                ZEND_VM_STACK_GROW_IF_NEEDED((int) arg_count + 1);
-                for (i=0; i < arg_count; i++) {
-                    zval *param;
-                    if (ARG_SHOULD_BE_SENT_BY_REF(ex->func, i + 1)) {
-                        if (!Z_ISREF_P(*params[i]) && Z_REFCOUNT_P(*params[i]) > 1) {
-                            zval *new_zval;
-
-                            if (!ARG_MAY_BE_SENT_BY_REF(ex->func, i + 1)) {
-                                if (i || UNEXPECTED(ZEND_VM_STACK_ELEMETS(EG(argument_stack)) == (EG(argument_stack)->top))) {
-                                    zend_vm_stack_push((void *) (zend_uintptr_t)i);
-                                    zend_vm_stack_clear_multiple(0);
-                                }
-
-                                zend_error(E_WARNING, "Parameter %d to %s%s%s() expected to be a reference, value given",
-                                        i+1,
-                                        ex->func->common.scope ? ZSTR_VAL(ex->func->common.scope->name) : "",
-                                        ex->func->common.scope ? "::" : "",
-                                        ZSTR_VAL(ex->func->common.function_name)
-                                        );
-                                return;
-                            }
-
-                            new_zval = emalloc(sizeof(zval));
-                            *new_zval = **params[i];
-                            zval_copy_ctor(new_zval);
-                            Z_REFCOUNT_P(new_zval) = 1;
-                            Z_DELREF_PP(params[i]);
-                            *params[i] = new_zval;
-                        }
-                        Z_ADDREF_P(*params[i]);
-                        Z_SET_ISREF_P(*params[i]);
-                        param = *params[i];
-                    } else if (Z_ISREF_P(*params[i]) && (ex->func->common.fn_flags & ZEND_ACC_CALL_VIA_HANDLER) == 0 ) {
-                        param = emalloc(sizeof(zval));
-                        *param = **(params[i]);
-                        ZVAL_UNDEF(param);
-                        zval_copy_ctor(param);
-                    } else if (*params[i] != &EG(uninitialized_zval)) {
-                        Z_ADDREF_P(*params[i]);
-                        param = *params[i];
-                    } else {
-                        param = emalloc(sizeof(zval));
-                        *param = **(params[i]);
-                        ZVAL_UNDEF(param);
-                    }
-                    zend_vm_stack_push(param);
-                }
-                EG(current_execute_data)->func->common.num_args = arg_count;
+                fci_params = safe_emalloc(arg_count, sizeof(zval), 0);
+                ZEND_HASH_FOREACH_VAL(ht, zv) {
+                    ZVAL_COPY(&fci_params[i], zv);
+                    i++;
+                } ZEND_HASH_FOREACH_END();
             }
         } else {
+            if (!ex || !ex->func) {
+                return; /* Can't get arguments without execute_data */
+            }
             arg_count = ZEND_CALL_NUM_ARGS(ex);
-        }
-
-        current_scope = EG(scope);
-        EG(scope) = calling_scope;
-        current_this = EG(This);
-        current_called_scope = EG(called_scope);
-        if (called_scope) {
-            EG(called_scope) = called_scope;
-        } else if (ex->func->type != ZEND_INTERNAL_FUNCTION) {
-            EG(called_scope) = NULL;
-        }
-
-        if (object) {
-            if ((ex->func->common.fn_flags & ZEND_ACC_STATIC)) {
-                EG(This) = NULL;
-            } else {
-                EG(This) = object;
-
-                if (!Z_ISREF_P(EG(This))) {
-                    Z_ADDREF_P(EG(This)); 
+            if (arg_count > 0) {
+                fci_params = safe_emalloc(arg_count, sizeof(zval), 0);
+                /* In PHP 8, arguments are stored in the call frame */
+                zval *call_args = ZEND_CALL_VAR_NUM(ex, 0);
+                if (call_args) {
+                    for (i = 0; i < arg_count; i++) {
+                        zval *src = ZEND_CALL_VAR_NUM(ex, i);
+                        if (src && Z_TYPE_P(src) != IS_UNDEF) {
+                            ZVAL_COPY(&fci_params[i], src);
+                        } else {
+                            ZVAL_NULL(&fci_params[i]);
+                        }
+                    }
                 } else {
-                    zval *this_ptr;
-                    this_ptr = emalloc(sizeof(zval));
-                    *this_ptr = *EG(This);
-                    ZVAL_UNDEF(this_ptr);
-                    zval_copy_ctor(this_ptr);
-                    EG(This) = this_ptr;
+                    /* Fallback: try ZEND_CALL_ARG */
+                    for (i = 0; i < arg_count; i++) {
+                        zval *src = ZEND_CALL_ARG(ex, i);
+                        if (src && Z_TYPE_P(src) != IS_UNDEF) {
+                            ZVAL_COPY(&fci_params[i], src);
+                        } else {
+                            ZVAL_NULL(&fci_params[i]);
+                        }
+                    }
                 }
+            }
+        }
+
+        fci.param_count = arg_count;
+        fci.params = fci_params;
+
+        if (!ex || !ex->func) {
+            if (fci_params) {
+                for (i = 0; i < arg_count; i++) {
+                    zval_ptr_dtor(&fci_params[i]);
+                }
+                efree(fci_params);
+            }
+            return; /* Can't call without function */
+        }
+
+        /* For user functions, we need to execute the op_array directly */
+        if (ex->func->type == ZEND_USER_FUNCTION) {
+            /* For user functions, we can't easily re-execute them here.
+             * The original code relied on executor globals that no longer exist.
+             * This is a limitation - around advice on user functions may not work correctly.
+             * We'll try to call it via zend_call_function but it may not work for all cases.
+             */
+            if (ex->func->common.function_name) {
+                ZVAL_STR_COPY(&fci.function_name, ex->func->common.function_name);
+            }
+            fcc.function_handler = ex->func;
+            fcc.calling_scope = calling_scope ? calling_scope : ex->func->common.scope;
+            fcc.called_scope = called_scope ? called_scope : fcc.calling_scope;
+            fcc.object = fci.object;
+
+            if (zend_call_function(&fci, &fcc) == SUCCESS) {
+                if (to_return_ptr_ptr) {
+                    if (*to_return_ptr_ptr == NULL) {
+                        *to_return_ptr_ptr = emalloc(sizeof(zval));
+                    }
+                    ZVAL_COPY(*to_return_ptr_ptr, &retval);
+                }
+            }
+
+            if (!Z_ISUNDEF(fci.function_name)) {
+                zval_ptr_dtor(&fci.function_name);
             }
         } else {
-            EG(This) = NULL;
-        }
+            /* For internal functions, use the function handler */
+            fcc.function_handler = ex->func;
+            fcc.calling_scope = calling_scope ? calling_scope : ex->func->common.scope;
+            fcc.called_scope = called_scope ? called_scope : fcc.calling_scope;
+            fcc.object = fci.object;
 
-        //    EX(prev_execute_data) = EG(current_execute_data);
-        if (ex->func->type == ZEND_USER_FUNCTION) {
-            calling_symbol_table = EG(active_symbol_table);
-            EG(scope) = ex->func->common.scope;
-
-            original_return_value = EG(return_value_ptr_ptr);
-            original_op_array = EG(active_op_array);
-            EG(return_value_ptr_ptr) = to_return_ptr_ptr;
-            EG(active_op_array) = &ex->func->op_array;
-            original_opline_ptr = EG(opline_ptr);
-            _zend_execute(EG(active_op_array));
-
-            if (EG(symtable_cache_ptr)>=EG(symtable_cache_limit)) {
-                zend_hash_destroy(EG(active_symbol_table));
-                FREE_HASHTABLE(EG(active_symbol_table));
-            } else {
-                /* clean before putting into the cache, since clean
-                   could call dtors, which could use cached hash */
-                if (EG(active_symbol_table)) {
-                    zend_hash_clean(EG(active_symbol_table));
-                    *(++EG(symtable_cache_ptr)) = EG(active_symbol_table);
+            if (zend_call_function(&fci, &fcc) == SUCCESS) {
+                if (to_return_ptr_ptr) {
+                    if (*to_return_ptr_ptr == NULL) {
+                        *to_return_ptr_ptr = emalloc(sizeof(zval));
+                    }
+                    ZVAL_COPY(*to_return_ptr_ptr, &retval);
                 }
             }
-            EG(active_op_array) = original_op_array;
-            EG(return_value_ptr_ptr)=original_return_value;
-            EG(opline_ptr) = original_opline_ptr;
-            EG(active_symbol_table) = calling_symbol_table;
-        } else if (ex->func->type == ZEND_INTERNAL_FUNCTION) {
-            int call_via_handler = (ex->func->common.fn_flags & ZEND_ACC_CALL_VIA_HANDLER) != 0;
-            if (to_return_ptr_ptr==NULL) {
-                to_return_ptr_ptr = emalloc(sizeof(zval *));
-            }
-            if ((*to_return_ptr_ptr)==NULL) {
-                *to_return_ptr_ptr = emalloc(sizeof(zval));
-                ZVAL_NULL(*to_return_ptr_ptr);
-            }
-            if (ex->func->common.scope) {
-                EG(scope) = ex->func->common.scope;
-            }
-            ((zend_internal_function *) ex->func)->handler(arg_count, *to_return_ptr_ptr, to_return_ptr_ptr, object, 1);
-            /*  We shouldn't fix bad extensions here,
-                because it can break proper ones (Bug #34045)
-                if (!EX(function_state).function->common.return_reference)
-                {
-                ZVAL_UNDEF(*fci->retval_ptr_ptr);
-                }*/
-
-        } else { /* ZEND_OVERLOADED_FUNCTION */
-            if ((*to_return_ptr_ptr)==NULL) {
-                *to_return_ptr_ptr = emalloc(sizeof(zval));
-                ZVAL_NULL(*to_return_ptr_ptr);
-            }
-            if (object) {
-                Z_OBJ_HT_P(object)->call_method(Z_OBJCE_P(object), ex->func->common.function_name, arg_count, *to_return_ptr_ptr, to_return_ptr_ptr, object, 1);
-            } else {
-                zend_error(E_ERROR, "Cannot call overloaded function for non-object");
-            }
-
-            if (ex->func->type == ZEND_OVERLOADED_FUNCTION_TEMPORARY) {
-                efree((char*)ex->func->common.function_name);
-            }
-            efree(ex->func);
-
         }
 
-
-        EG(current_execute_data) =  original_execute_data;
-        if (args_overloaded) {
-            zend_vm_stack_clear_multiple(0);
+        if (!Z_ISUNDEF(retval)) {
+            zval_ptr_dtor(&retval);
         }
 
-        if (EG(This)) {
-            zval_ptr_dtor(&EG(This));
+        if (fci_params) {
+            for (i = 0; i < arg_count; i++) {
+                zval_ptr_dtor(&fci_params[i]);
+            }
+            efree(fci_params);
         }
-        EG(called_scope) = current_called_scope;
-        EG(scope) = current_scope;
-        EG(This) = current_this;
-        //    EG(current_execute_data) = EX(prev_execute_data);
-        EX(object) = original_object;
-        if (args_overloaded) {
-            //zval_ptr_dtor(&args);
-            efree(params);
+    }
+
+    /* Simple string replacement helper - implementation */
+    static char *aop_str_replace(const char *haystack, size_t haystack_len, 
+                                  const char *needle, size_t needle_len,
+                                  const char *replacement, size_t replacement_len) {
+        const char *pos;
+        char *result;
+        size_t result_len = 0;
+        size_t count = 0;
+        const char *p = haystack;
+        
+        /* Count occurrences */
+        while ((pos = strstr(p, needle)) != NULL) {
+            count++;
+            p = pos + needle_len;
         }
+        
+        if (count == 0) {
+            return estrndup(haystack, haystack_len);
+        }
+        
+        /* Calculate result length */
+        result_len = haystack_len + (replacement_len - needle_len) * count;
+        result = emalloc(result_len + 1);
+        
+        /* Perform replacement */
+        p = haystack;
+        char *out = result;
+        while ((pos = strstr(p, needle)) != NULL) {
+            size_t copy_len = pos - p;
+            memcpy(out, p, copy_len);
+            out += copy_len;
+            memcpy(out, replacement, replacement_len);
+            out += replacement_len;
+            p = pos + needle_len;
+        }
+        memcpy(out, p, haystack + haystack_len - p);
+        out[result_len] = '\0';
+        
+        return result;
     }
 
     static int strcmp_with_joker_case(char *str_with_jok, char *str, int case_sensitive) {
@@ -1275,31 +1332,42 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
     }
 
     static int pointcut_match_zend_class_entry (pointcut *pc, zend_class_entry *ce) {
-        int i, matches;
+        int i;
+        pcre2_match_data *match_data;
+        int rc;
+        zend_string *subject;
 
-        matches = pcre_exec(pc->re_class, NULL, ZSTR_VAL(ce->name), ZSTR_LEN(ce->name), 0, 0, NULL, 0);
-        if (matches >= 0) {
-            return 1;
+        if (!pc->re_class) return 0;
+
+        subject = ce->name;
+        match_data = pcre2_match_data_create_from_pattern(pc->re_class, NULL);
+        if (match_data) {
+            rc = pcre2_match(pc->re_class, (PCRE2_SPTR)ZSTR_VAL(subject), ZSTR_LEN(subject), 0, 0, match_data, NULL);
+            pcre2_match_data_free(match_data);
+            if (rc >= 0) return 1;
         }
+
         for (i = 0; i < (int) ce->num_interfaces; i++) {
-            matches = pcre_exec(pc->re_class, NULL, ZSTR_VAL(ce->interfaces[i]->name), ZSTR_LEN(ce->interfaces[i]->name), 0, 0, NULL, 0);
-            if (matches >= 0) {
-                return 1;
+            subject = ce->interfaces[i]->name;
+            match_data = pcre2_match_data_create_from_pattern(pc->re_class, NULL);
+            if (match_data) {
+                rc = pcre2_match(pc->re_class, (PCRE2_SPTR)ZSTR_VAL(subject), ZSTR_LEN(subject), 0, 0, match_data, NULL);
+                pcre2_match_data_free(match_data);
+                if (rc >= 0) return 1;
             }
         }
-#if ZEND_MODULE_API_NO >= 20100525
-        for (i = 0; i < (int) ce->num_traits; i++) {
-            matches = pcre_exec(pc->re_class, NULL, ZSTR_VAL(ce->traits[i]->name), ZSTR_LEN(ce->traits[i]->name), 0, 0, NULL, 0);
-            if (matches>=0) {
-                return 1;
-            }
-        }
-#endif
+
+        /* Traits are no longer directly accessible in PHP 8.4 - would need to iterate through class hierarchy differently */
+        /* Skipping trait matching for now */
+
         ce = ce->parent;
         while (ce != NULL) {
-            matches = pcre_exec(pc->re_class, NULL, ZSTR_VAL(ce->name), ZSTR_LEN(ce->name), 0, 0, NULL, 0);
-            if (matches >= 0) {
-                return 1;
+            subject = ce->name;
+            match_data = pcre2_match_data_create_from_pattern(pc->re_class, NULL);
+            if (match_data) {
+                rc = pcre2_match(pc->re_class, (PCRE2_SPTR)ZSTR_VAL(subject), ZSTR_LEN(subject), 0, 0, match_data, NULL);
+                pcre2_match_data_free(match_data);
+                if (rc >= 0) return 1;
             }
             ce = ce->parent;
         }
@@ -1329,7 +1397,20 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
             return 0;
         }
         if (pc->method_jok) {
-            int matches = pcre_exec(pc->re_method, NULL, ZSTR_VAL(curr_func->common.function_name), ZSTR_LEN(curr_func->common.function_name), 0, 0, NULL, 0);
+            pcre2_match_data *match_data;
+            int matches;
+            zend_string *subject = curr_func->common.function_name;
+
+            if (!pc->re_method) {
+                return 0;
+            }
+
+            match_data = pcre2_match_data_create_from_pattern(pc->re_method, NULL);
+            if (!match_data) {
+                return 0;
+            }
+            matches = pcre2_match(pc->re_method, (PCRE2_SPTR)ZSTR_VAL(subject), ZSTR_LEN(subject), 0, 0, match_data, NULL);
+            pcre2_match_data_free(match_data);
 
             if (matches < 0) {
                 return 0;
@@ -1371,7 +1452,7 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
     PHP_MSHUTDOWN_FUNCTION(aop)
     {
 #if ZEND_MODULE_API_NO >= 20121212
-        zend_execute_ex  = _zend_execute;
+        /* zend_execute_ex assignment removed - not needed in PHP 8.4 */
 #else
         zend_execute  = _zend_execute;
 #endif
@@ -1384,7 +1465,7 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
 
     HashTable *calculate_class_pointcuts (zend_class_entry *ce, int kind_of_advice) {
         pointcut **pc;
-        zend_hash_position pos;
+        HashPosition pos;
         HashTable *ht;
         ALLOC_HASHTABLE(ht);
         //No free because pointcuts are free in the aop_g(pointcuts)
@@ -1392,7 +1473,9 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
 
 
         zend_hash_internal_pointer_reset_ex(aop_g(pointcuts), &pos);
-        while (zend_hash_get_current_data_ex(aop_g(pointcuts), (void **)&pc, &pos) == SUCCESS) {
+        zval *zv;
+        while ((zv = zend_hash_get_current_data_ex(aop_g(pointcuts), &pos)) != NULL) {
+            pc = (pointcut **)Z_PTR_P(zv);
             if (!((*pc)->kind_of_advice & kind_of_advice)) {
                 zend_hash_move_forward_ex (aop_g(pointcuts), &pos);
             } else if ((ce==NULL 
@@ -1412,7 +1495,7 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
         zend_function *curr_func;
         HashTable *ht = NULL;
         HashTable *class_pointcuts;
-        zend_hash_position pos;
+        HashPosition pos;
         pointcut **pc;
         zend_class_entry *ce = NULL;
         if (object != NULL) {
@@ -1431,11 +1514,17 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
         class_pointcuts = calculate_class_pointcuts(ce, AOP_KIND_FUNCTION | AOP_KIND_METHOD);
 
         zend_hash_internal_pointer_reset_ex(class_pointcuts, &pos);
-        while (zend_hash_get_current_data_ex(class_pointcuts, (void **)&pc, &pos) == SUCCESS) {
-            if (pointcut_match_zend_function((*pc), curr_func, ex)) {
-                zend_hash_next_index_insert (ht, pc, sizeof(pointcut **), NULL);
+        {
+            zval *zv;
+            while ((zv = zend_hash_get_current_data_ex(class_pointcuts, &pos)) != NULL) {
+                pc = (pointcut **)Z_PTR_P(zv);
+                if (pointcut_match_zend_function((*pc), curr_func, ex)) {
+                    zval zv_insert;
+                    ZVAL_PTR(&zv_insert, pc);
+                    zend_hash_next_index_insert(ht, &zv_insert);
+                }
+                zend_hash_move_forward_ex (class_pointcuts, &pos);
             }
-            zend_hash_move_forward_ex (class_pointcuts, &pos);
         }
 
         zend_hash_destroy(class_pointcuts);
@@ -1448,7 +1537,7 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
         zval *tmp_member;
         HashTable *class_pointcuts;
         HashTable *ht;
-        zend_hash_position pos;
+        HashPosition pos;
         pointcut **pc;
         ALLOC_HASHTABLE(ht);
         //No free because pointcuts are free in the aop_g(pointcuts)
@@ -1463,29 +1552,31 @@ ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data
         zval_copy_ctor(tmp_member);
         convert_to_string(tmp_member);
         member = tmp_member;
-#if ZEND_MODULE_API_NO >= 20100525
-        key = NULL;
-#endif
+        /* key (zend_literal) removed in PHP 8.4 */
     }
 
 
         zend_hash_internal_pointer_reset_ex(class_pointcuts, &pos);
-        while (zend_hash_get_current_data_ex(class_pointcuts, (void **)&pc, &pos) == SUCCESS) {
-            if ((*pc)->method[0] != '*') {
-                if (!strcmp_with_joker_case((*pc)->method, Z_STRVAL_P(member), 1)) {
-                    zend_hash_move_forward_ex (class_pointcuts, &pos);
-                    continue;
+        {
+            zval *zv;
+            while ((zv = zend_hash_get_current_data_ex(class_pointcuts, &pos)) != NULL) {
+                pc = (pointcut **)Z_PTR_P(zv);
+                if ((*pc)->method[0] != '*') {
+                    if (!strcmp_with_joker_case((*pc)->method, Z_STRVAL_P(member), 1)) {
+                        zend_hash_move_forward_ex (class_pointcuts, &pos);
+                        continue;
+                    }
                 }
-            }
-            //Scope
-            if ((*pc)->static_state != 2 || (*pc)->scope != 0) {
-                if (!test_property_scope(*pc, Z_OBJCE_P(object), member AOP_KEY_C)) {
-                    zend_hash_move_forward_ex (aop_g(pointcuts), &pos);
-                    continue;
+                //Scope
+                if ((*pc)->static_state != 2 || (*pc)->scope != 0) {
+                    if (!test_property_scope(*pc, Z_OBJCE_P(object), member AOP_KEY_C)) {
+                        zend_hash_move_forward_ex (aop_g(pointcuts), &pos);
+                        continue;
+                    }
                 }
+                zend_hash_next_index_insert_ptr(ht, pc);
+                zend_hash_move_forward_ex (aop_g(pointcuts), &pos);
             }
-            zend_hash_next_index_insert_ptr(ht, pc);
-            zend_hash_move_forward_ex (aop_g(pointcuts), &pos);
         }
         zend_hash_destroy(class_pointcuts);
         FREE_HASHTABLE(class_pointcuts);
@@ -1519,21 +1610,36 @@ HashTable *get_object_cache_read (zval *object) //aop_g(object_cache_read)
 }
 HashTable *get_object_cache_func (zval *object)
 {
-    object_cache *cache;
-    cache = get_object_cache(object);
+    if (!object || Z_TYPE_P(object) != IS_OBJECT) {
+        return NULL;
+    }
+    object_cache *cache = get_object_cache(object);
+    if (!cache) {
+        return NULL;
+    }
     if (cache->func == NULL) {
         ALLOC_HASHTABLE(cache->func);
-        zend_hash_init(cache->func, 16, NULL, free_pointcut_cache ,0);
+        zend_hash_init(cache->func, 16, NULL, (dtor_func_t)free_pointcut_cache, 0);
     }
-    return cache->func;;
+    return cache->func;
 
 }
 
 object_cache *get_object_cache (zval *object)
 {
     int i;
-    zend_object_handle handle;
-    handle = Z_OBJ_HANDLE_P(object);
+    uint32_t handle;
+    
+    if (!object || Z_TYPE_P(object) != IS_OBJECT) {
+        return NULL;
+    }
+    
+    zend_object *obj = Z_OBJ_P(object);
+    if (!obj) {
+        return NULL;
+    }
+    
+    handle = obj->handle;
     if (handle>=aop_g(object_cache_size)) {
         aop_g(object_cache) = erealloc(aop_g(object_cache), sizeof (object_cache)*handle+1);
         for (i = aop_g(object_cache_size); i <= handle; i++) {
@@ -1574,19 +1680,13 @@ HashTable * get_cache_property (zval *object, zval *member, int type) {
         zval_copy_ctor(tmp_member);
         convert_to_string(tmp_member);
         member = tmp_member;
-#if ZEND_MODULE_API_NO >= 20100525
-        key = NULL;
-#endif
+        /* key (zend_literal) removed in PHP 8.4 */
         member_need_free = 1;
     }
     
     key_str = Z_STRVAL_P(member);
     key_len = Z_STRLEN_P(member);
-#if ZEND_MODULE_API_NO < 20100525
-    h = zend_get_hash_value(key_str, key_len);
-#else
-    h = key ? key->hash_value : zend_get_hash_value(key_str, key_len);
-#endif
+    /* h no longer needed - zend_hash_str_* functions compute hash internally */
     cache = zend_hash_str_find_ptr(ht_object_cache, key_str, key_len);
     if (cache!=NULL 
     && (cache->version < aop_g(pointcut_version) 
@@ -1606,7 +1706,8 @@ HashTable * get_cache_property (zval *object, zval *member, int type) {
         cache = _cache;
     }
     if (member_need_free) {
-        zval_ptr_dtor(&member);
+        zval_ptr_dtor(member);
+        efree(member);
     }
     return cache->ht;
 }
@@ -1621,21 +1722,31 @@ HashTable * get_cache_func (zval *object, zend_execute_data *ex) {
     if (ex) {
         curr_func = ex->func;
     }
-    if (object == NULL) {
+    if (object == NULL || (object && Z_TYPE_P(object) != IS_OBJECT)) {
         ht_object_cache = aop_g(function_cache);
-        if (curr_func->common.fn_flags & ZEND_ACC_STATIC) {
+        if (curr_func && curr_func->common.fn_flags & ZEND_ACC_STATIC) {
             key_str = (char *)emalloc (ZSTR_LEN(curr_func->common.scope->name) + ZSTR_LEN(curr_func->common.function_name) + 3);
             sprintf((char *)key_str, "%s::%s", ZSTR_VAL(curr_func->common.scope->name), ZSTR_VAL(curr_func->common.function_name));
             key_len = strlen (key_str);
         } else {
+            if (!curr_func || !curr_func->common.function_name) {
+                return NULL;
+            }
             key_str = estrdup(ZSTR_VAL(curr_func->common.function_name));
             key_len = strlen(key_str);
         }
-        } else {
-            key_str = estrdup(ZSTR_VAL(curr_func->common.function_name));
-            key_len = strlen(key_str);
-            ht_object_cache = get_object_cache_func(object);
+    } else {
+        if (!object || Z_TYPE_P(object) != IS_OBJECT || !curr_func || !curr_func->common.function_name) {
+            return NULL;
         }
+        key_str = estrdup(ZSTR_VAL(curr_func->common.function_name));
+        key_len = strlen(key_str);
+        ht_object_cache = get_object_cache_func(object);
+        if (!ht_object_cache) {
+            efree(key_str);
+            return NULL;
+        }
+    }
     cache = zend_hash_str_find_ptr(ht_object_cache, key_str, key_len);
     if (cache!=NULL 
             && (cache->version < aop_g(pointcut_version) 

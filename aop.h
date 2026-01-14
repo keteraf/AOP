@@ -71,9 +71,6 @@ typedef struct {
     int internal;
     zval *property;
     zval *value;
-#if ZEND_MODULE_API_NO >= 20100525
-    const zend_literal *key;
-#endif
 } joinpoint_context;
 
 typedef struct {
@@ -87,8 +84,8 @@ typedef struct {
     int kind_of_advice;
     zend_fcall_info fci;
     zend_fcall_info_cache fcic;
-    pcre *re_method;
-    pcre *re_class;
+    pcre2_code *re_method;
+    pcre2_code *re_class;
 } pointcut;
 
 typedef struct {
@@ -121,14 +118,11 @@ typedef struct {
     int kind_of_advice;
     int current_pointcut_index;
     HashTable *advice;
-    zend_hash_position pos;
+    HashPosition pos;
     zval *object;
     zval *member;
     zval *value;
     int type;
-#if ZEND_MODULE_API_NO >= 20100525
-    const zend_literal *key;
-#endif
     zend_execute_data *ex;
     zend_class_entry *scope;
     zend_class_entry *called_scope;
@@ -190,37 +184,35 @@ extern zend_module_entry aop_module_entry;
 #define phpext_aop_ptr &aop_module_entry
 
 static void (*_zend_execute_ex)(zend_execute_data *execute_data);
-static void (*_zend_execute) (zend_op_array *ops);
+static void (*_zend_execute) (zend_op_array *ops, zval *return_value);
 
-ZEND_DLEXPORT void (*_zend_execute_internal) (zend_execute_data *current_execute_data, zend_fcall_info *fci, zval *return_value);
-static void add_pointcut (zend_fcall_info fci, zend_fcall_info_cache fcic, char *selector, int selector_len, int type, zval **return_value_ptr);
-static void free_pointcut(void *);
-static void free_pointcut_cache (void *);
+extern ZEND_DLEXPORT void (*_zend_execute_internal) (zend_execute_data *current_execute_data, zval *return_value);
+static void add_pointcut (zend_fcall_info fci, zend_fcall_info_cache fcic, char *selector, int selector_len, int type, zval *return_value);
+static void free_pointcut(zval *);
+static void free_pointcut_cache (zval *);
 ZEND_DLEXPORT void aop_execute (zend_op_array *ops);
 
 ZEND_DLEXPORT void aop_execute_ex (zend_execute_data *execute_data);
-ZEND_DLEXPORT void _zend_execute_overload(zend_op_array *ops);
+ZEND_DLEXPORT void _zend_execute_overload(zend_op_array *ops, zval *return_value);
 
-ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data, zend_fcall_info *fci, zval *return_value);
+ZEND_DLEXPORT void aop_execute_internal (zend_execute_data *current_execute_data, zval *return_value);
 zval *get_current_args (zend_execute_data *ex);
 static int strcmp_with_joker (char *str_with_jok, char *str);
 static int strcmp_with_joker_case (char *str_with_jok, char *str, int case_sensitive);
 
 static int pointcut_match_zend_class_entry (pointcut *pc, zend_class_entry *ce);
 static int pointcut_match_zend_function (pointcut *pc, zend_function *curr_func, zend_execute_data *data);
-void _test_func_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zend_execute_data *ex, zval *object, zend_class_entry *scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval **to_return_ptr_ptr);
-static zval * (*zend_std_read_property)(zval *object, zval *member, int type);
-static zval * (*zend_std_get_property_ptr_ptr)(zval *object, zval *member);
-void _test_write_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zval *object, zval *member, zval *value, zend_class_entry *current_scope);
+void _test_func_pointcut_and_execute(HashPosition *pos, HashTable *ht, zend_execute_data *ex, zval *object, zend_class_entry *scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval **to_return_ptr_ptr);
+void _test_write_pointcut_and_execute(HashPosition *pos, HashTable *ht, zval *object, zval *member, zval *value, zend_class_entry *current_scope);
 static void execute_pointcut (pointcut *pointcut_to_execute, zval *arg);
 static int test_property_scope (pointcut *current_pc, zend_class_entry *ce, zval *member);
 static void execute_context (zend_execute_data *ex, zval *object, zend_class_entry *calling_scope, zend_class_entry *called_scope, int args_overloaded, zval *args, zval ** to_return_ptr_ptr);
 
-ZEND_DLEXPORT zval *zend_std_get_property_ptr_ptr_overload(zval *object, zval *member); 
+ZEND_DLEXPORT zval *zend_std_get_property_ptr_ptr_overload(zend_object *object, zend_string *member, int type, void **cache_slot); 
 
 HashTable *calculate_function_pointcuts (zval *object, zend_execute_data *ex);
 HashTable *calculate_property_pointcuts (zval *object, zval *member, int kind);
-zval *_test_read_pointcut_and_execute(zend_hash_position *pos, HashTable *ht, zval *object, zval *member, int type, zend_class_entry *current_scope);
+zval *_test_read_pointcut_and_execute(HashPosition *pos, HashTable *ht, zval *object, zval *member, int type, zend_class_entry *current_scope);
 void make_regexp_on_pointcut (pointcut **pc); 
 object_cache *get_object_cache (zval *object);
 HashTable * get_cache_property (zval *object, zval *member, int type);
